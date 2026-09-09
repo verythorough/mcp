@@ -1,0 +1,16 @@
+{$MCP_HOSTNAME} {
+	# Caddy passes the original Host upstream by default, which is why
+	# MCP_ALLOWED_HOSTS must list this same name.
+	reverse_proxy fastly-mcp:8231 {
+		# execute caps itself at 30s; don't cut a call short of that.
+		transport http {
+			response_header_timeout 60s
+		}
+		# Streamable HTTP can answer as text/event-stream. Don't buffer it.
+		flush_interval -1
+	}
+
+	log {
+		output file /data/access.log
+	}
+}
