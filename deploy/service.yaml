@@ -1,0 +1,63 @@
+# Cloud Run service definition.
+#
+#   gcloud run services replace deploy/service.yaml --region REGION
+#
+# Replace PROJECT_ID, REGION, and the MCP_ALLOWED_HOSTS entries before
+# applying. Both tokens come from Secret Manager, never from this file.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fastly-mcp
+  annotations:
+    # MCP clients send a static bearer token, which collides with Cloud Run's
+    # own IAM auth: both claim the Authorization header, and Cloud Run passes
+    # the caller's header through to the container. Gate on the server's token
+    # (deploy with --allow-unauthenticated) and use "internal" ingress or an
+    # external allowlist for network-level control.
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        # The index build costs ~2s and ~90MB at startup; keep one warm.
+        autoscaling.knative.dev/minScale: "1"
+        # Raising this is safe ONLY while --encrypt-secrets is off: its
+        # decrypt table is per-process, so a value encrypted by one instance
+        # cannot be decrypted by another.
+        autoscaling.knative.dev/maxScale: "4"
+        # gen2 gives full Linux compatibility for the per-call subprocess.
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      # A dedicated account with NO IAM roles. The execute sandbox can reach
+      # the metadata server, so whatever this account can do, a caller
+      # holding the bearer token can do.
+      serviceAccountName: fastly-mcp@PROJECT_ID.iam.gserviceaccount.com
+      # Each concurrent execute call spawns a ~100MB Node subprocess. The
+      # platform default of 80 would need ~8GB on one instance.
+      containerConcurrency: 4
+      # execute caps itself at 30s; this leaves headroom without hanging.
+      timeoutSeconds: 60
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/fastly-mcp/fastly-mcp:2.1.5
+          ports:
+            - name: http1
+              containerPort: 8231
+          env:
+            # Comma-separated. Must include every hostname clients use, or
+            # the server answers 421. Include the run.app URL if you use it.
+            - name: MCP_ALLOWED_HOSTS
+              value: "mcp.example.com,fastly-mcp-REPLACE.REGION.run.app"
+            - name: FASTLY_MCP_HTTP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fastly-mcp-http-auth-token
+                  key: latest
+            - name: FASTLY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fastly-api-token
+                  key: latest
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
